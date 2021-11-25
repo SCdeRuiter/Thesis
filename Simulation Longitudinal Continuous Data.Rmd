@@ -1,0 +1,197 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r}
+library(lme4)
+library(dplyr)
+library(nlme)
+library(cowplot)
+library(ggplot2)
+
+# Simple function to create longitudinal data and fit a model
+# Allows specification of constant treatment effects only 
+
+LongdatFun = function(npts = 500, ntpts = 10, mu = 2, treateff = 2, timeeff = 0.5, sigma_s = 2, sigma = 5, seed = 1) {
+  # input arguments:
+    ## npts = number of patients in data set (sample size)
+    ## ntpts = number of time points in the follow up
+    ## mu = intercept, mean score at baseline 
+    ## treateff = treatment effect, average difference between pts in treatment and control group
+    ## timeeff = time effect, average effect of time
+    ## sigma_s = between subject st. dev. (i.e. sqrt(between subject var))
+    ## sigma = within subject variance (noise)
+    ## seed = random seed for reproducibility
+  
+     treat = rep(0:1, each = npts*ntpts/2) # assign patients to one of the tweo treatment arms
+     
+     pteff = rep(rnorm(npts, 0, sigma_s), each = ntpts) # patient random effect
+     pt = rep((1:npts), each = ntpts) # id number 
+     
+     tpteff = rnorm(npts*ntpts, 0, sigma) # time point effect (residual variance)
+     tpt = rep(1:ntpts, times = npts) # time point 
+     
+     score = mu + pteff + treat * treateff + (tpt-1) * timeeff + tpteff # estimated score for each patient
+     
+     dat = data.frame(pt, tpt, treat, score) 
+     lm = lme(score ~ treat + tpt, random = ~1|pt, data = dat) # fit a model
+     
+     return(list(dat = dat, lm = lm))
+}
+
+# Plot the results of an example
+dat <- LongdatFun(npts = 1000, treateff = 2)$dat
+datuntreat <- dat[dat$treat == 0, ]
+dattreat <- dat[dat$treat == 1, ]
+my_averages = c(tapply(datuntreat$score, datuntreat$tpt, mean), tapply(dattreat$score, dattreat$tpt, mean))
+
+plot(my_averages[1:10], type = "l", ylim = c(0, 10), ylab = "Average score", xlab = "Time"); points(my_averages[11:20], type = "l", col = 2)
+
+### Examples 1 vs 3 vs 10 timepoints 
+
+# A) Default variances: pt random effect = 2, residual variance = 5
+# --> Seems to have a benefit to increase nr of visits
+
+## Single time points
+data <- LongdatFun()$dat
+datafirsttpt <- data[data$tpt == 1, ] 
+lm1 <- lm(score ~ treat, data = datafirsttpt)
+summary(lm1) # tx effect = 2.1482; SE = 0.4988
+
+data5thtpt <- data[data$tpt == 5, ] 
+lm5 <- lm(score ~ treat, data = data5thtpt)
+summary(lm5) # tx effect = 1.3334; SE = 0.4964
+
+data10thtpt <- data[data$tpt == 10, ] 
+lm10 <- lm(score ~ treat, data = data10thtpt)
+summary(lm10) # tx effect = 1.3670; SE = 0.4590
+
+## Three time points
+datathreetimepoints <- data[(data$tpt == 1 | data$tpt == 5 | data$tpt == 10), ]
+lmShortFU <- lmer(score ~ treat + tpt + (1|pt), datathreetimepoints)
+summary(lmShortFU) # tx effect = 1.62; SE = 0.33
+
+## Full Follow up
+lmlongFU <- lmer(score ~ treat + tpt + (1|pt), data)
+summary(lmlongFU) # tx effect = 2.03008; SE = 0.24025
+
+# B) Reversed variances: pt random effect = 5, residual variance = 2
+# --> It has only small benefits to increase length of FU
+
+## Single time points
+data <- LongdatFun(sigma_s = 5, sigma = 2)$dat
+
+datafirsttpt <- data[data$tpt == 1, ] 
+lm1 <- lm(score ~ treat, data = datafirsttpt)
+summary(lm1) # tx effect = 2.0633; SE = 0.5038
+
+data5thtpt <- data[data$tpt == 5, ] 
+lm5 <- lm(score ~ treat, data = data5thtpt)
+summary(lm5) # tx effect = 1.7374; SE = 0.5027
+
+data10thtpt <- data[data$tpt == 10, ] 
+lm10 <- lm(score ~ treat, data = data10thtpt)
+summary(lm10) # tx effect = 1.7508; SE = 0.4835
+
+## Three time points
+datathreetimepoints <- data[(data$tpt == 1 | data$tpt == 5 | data$tpt == 10), ]
+lmShortFU <- lmer(score ~ treat + tpt + (1|pt), datathreetimepoints)
+summary(lmShortFU) # tx effect = 1.85047; SE = 0.47584
+
+## Full Follow up
+lmlongFU <- lmer(score ~ treat + tpt + (1|pt), data)
+summary(lmlongFU) # tx effect = 2.01602; SE = 0.46020
+
+### Function that calculates all SEs (constant treatment effect)
+SimFunContLong <- function(nsim, npts, ntpts, mu, treateff, timeeff, sigma_s, sigma, seed) {
+  
+  # input arguments:
+    ## nsim = number of iterations per simulation
+    ## npts = number of patients in data set (sample size)
+    ## ntpts = number of time points in the follow up
+    ## mu = intercept, mean score at baseline 
+    ## treateff = treatment effect, average difference between pts in treatment and control group
+    ## timeeff = time effect, average effect of time
+    ## sigma_s = between subject st. dev. (i.e. sqrt(between subject var))
+    ## sigma = within subject variance (noise)
+    ## seed = random seed for reproducibility 
+  
+  set.seed(seed)
+  
+  # empty objects for storage
+  Ests <- matrix(nrow = nsim, ncol = 3)
+  SEs <- matrix(nrow = nsim, ncol = 3)
+  Zval <- matrix(nrow = nsim, ncol = 3)
+  
+  for (r in 1:nsim) {
+    
+    # << Full follow up >>
+    # simulate data and fit a linear mixed model
+    obj = LongdatFun(npts=npts, ntpts=ntpts, mu=mu, sigma_s=sigma_s, sigma=sigma, treateff=treateff, timeeff=timeeff)
+    lmFullFU = obj$lm 
+    
+    Ests[r, 1] =  fixef(lmFullFU)['treat'] # point estimate
+    SEs[r, 1] = sqrt(lmFullFU$var['treat', 'treat']) # SE of point estimate
+    Zval[r, 1] =  (Ests[r, 1])^2 /  (SEs[r, 1])^2 # z value 
+  
+    # << Short follow up (three time points) >>
+    # extract three time points
+    data = obj$dat
+    datathreetimepoints = data[(data$tpt == 1 | data$tpt == 5 | data$tpt == 10), ]
+    # fit a linear mixed effects model
+    lmShortFU = lme(score ~ treat + tpt, random = ~1|pt, datathreetimepoints)
+    
+    Ests[r, 2]  =  fixef(lmShortFU)['treat'] # point estimate
+    SEs[r, 2] =   sqrt(lmShortFU$var['treat', 'treat']) # SE of point estimate
+    Zval[r, 2]  =  (Ests[r, 2])^2 / (SEs[r, 2])^2 # z value
+    
+    # << single time point >>
+    # extract one of the time points
+    data5thtpt = data[data$tpt == 5, ] 
+    # fit a linear model
+    lm5 = lm(score ~ treat, data = data5thtpt)
+    
+    Ests[r, 3] =  summary(lm5)$coef['treat', 'Estimate'] # point estimate
+    SEs[r, 3] =  summary(lm5)$coef['treat', 'Std. Error'] # SE of point estimate
+    Zval[r, 3]  = (Ests[r, 3])^2 / (SEs[r, 3])^2 # z value
+  
+  }
+  results <- list(Ratio.10tpt.to.1tpt = colMeans(Zval)[1] / colMeans(Zval)[3],
+                  AverageZval=colMeans(Zval), 
+                  Resmatrix = matrix(data = c(AverageEst=colMeans(Ests), AverageSE=colMeans(SEs), AverageZval=colMeans(Zval)), ncol = 3, byrow = T, dimnames = list(c("AverageEst", "AverageSE", "AverageZval"), c("10tpt", "3tpt", "1tpt"))))
+  return(results)
+}
+
+# Systematic Grid approach
+sigma_s <- seq(0.5, 5, length.out = 38)
+sigma_e <- seq(0.5, 5, length.out = 38)
+
+LongerFU <-  expand.grid(BetwSubjVar = sigma_s, WithinSubjVar = sigma_e)
+LongerFU$Ratio.10tpt.to.1tpt <- rep(NA, nrow(LongerFU)) 
+
+for (i in 1:nrow(LongerFU)) {
+  LongerFU$Ratio.10tpt.to.1tpt[i] <- SimFunContLong(nsim = 100, npts = 200, ntpts = 10, mu = 2, treateff = 1.5, seed = 1, timeeff = 0.5, sigma_s = LongerFU$BetwSubjVar[i], sigma = LongerFU$WithinSubjVar[i])$Ratio.10tpt.to.1tpt
+}
+
+save(LongerFU, file = "LongerFU.Rdata")
+
+# Grid plot:
+p <- ggplot(LongerFU, aes(x = BetwSubjVar, y = WithinSubjVar, fill = Ratio.10tpt.to.1tpt)) +
+  geom_tile() +
+  theme_cowplot(font_family = "serif",
+                font_size = 14) +
+  scale_fill_distiller(palette = "Spectral", 
+                       name = "Ratio",
+                       breaks = c(round(min(LongerFU$Ratio.10tpt.to.1tpt), 2), 2:7),
+                       labels = c(round(min(LongerFU$Ratio.10tpt.to.1tpt), 2), 2:7),
+                       direction = 1,  
+                       limits = c(min(LongerFU$Ratio.10tpt.to.1tpt), max(LongerFU$Ratio.10tpt.to.1tpt))) + 
+  labs(x = "Between-subject standard deviation", y = "Within-subject standard deviation", fill = "Ratio") + 
+  theme(legend.key.height = unit(1, 'cm'), #change legend key height
+        legend.key.width = unit(0.5, 'cm')) #change legend key width))
+
+p
+```
