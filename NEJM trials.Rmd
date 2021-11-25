@@ -1,0 +1,296 @@
+---
+title: 'NEJM trials'
+output:
+  word_document: default
+  'pdf_document:': default
+  pdf_document:
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=5, fig.height=3.5) 
+#install.packages("rms")
+#install.packages("forestplot")
+#install.packages("Hmisc")
+#install.packages("brant")
+#install.packages("lmtest")
+#install.packages("nnet")
+require(rms)
+library(MASS)
+library(forestplot)
+library(brant)
+library(nnet)
+```
+
+# Stroke trial, MR CLEAN (Berkhemer et al., 2015) 
+
+```{r, eval = T, echo = T}
+# Reconstruct dataset based on appendix, scores 0 and 1 collapsed 
+control <- c(rep(1, 16), rep(2, 35), rep(3, 44), rep(4, 81), rep(5, 32), rep(6, 59)) #mRS scores
+intervention <- c(rep(1, 27), rep(2, 49), rep(3, 43), rep(4, 52), rep(5, 13), rep(6, 49)) #mRS scores
+
+dfStroke <- data.frame(score = c(intervention, control), # mRS scores (0 = no symptoms, 6 = death)
+                       treat = c(rep(1, 233), rep(0, 267))) # 0 = control (n = 267)
+                                                            # 1 = intervention (n = 233)
+
+options(datadist=datadist(dfStroke, q.effect = c(0.5, 0.75))) 
+
+table(dfStroke$treat, dfStroke$score)
+```
+
+```{r, eval=T, echo=T}
+# Perform ordinal logistic regression, several functions exist:
+# (NB negative coefficients such that an OR>1 corresponds to positive treatment effect)
+
+# 1) fit LRM model
+fit.lrm <- lrm(score ~ treat, data = dfStroke)
+# exp(-coef(fit.lrm))[6] # cOR
+
+# 2) fit ORM model
+fit.orm <- orm(score ~ treat, data = dfStroke)
+# exp(-coef(fit.orm))[6] # cOR
+
+# 3) fit POLR model
+fit.polr <- polr(as.factor(score) ~ treat, data = dfStroke)
+# exp(-coef(fit.polr)) # cOR
+```
+
+```{r, eval=T, echo=T}
+# Function to perform logistic regression for each cut-off value
+
+PerformLogReg <- function(data){ 
+  levels <- unique(data$score) 
+  mat <- matrix(nrow = length(levels)-1, ncol = 4) 
+  for (i in 1:(max(data$score)-1)){
+    fit <- glm(data$score<=levels[i] ~ treat, data = data, family = "binomial") 
+    # lower scores are better, so "<=" such that OR>1 = positive effect
+    mat[i, 1] <- exp(coef(fit)[2]) # point estimate 
+    mat[i, 2:3] <- exp(confint(fit)["treat", ]) # confidence intervals
+    mat[i, 4] <- summary(fit)$coefficients[2,2]
+  }
+  return(mat)
+}
+```
+
+```{r, eval=T, echo=T, warning=F, message=F}
+# Stroke trial forest plot
+
+ORs <- rbind(PerformLogReg(data=dfStroke),# binary ORs
+             c(exp(-summary(fit.lrm)[1, c(4, 7, 6)]), summary(fit.lrm)[1, 5]))  # common OR
+            # lower scores are better, so negative coefficient such that OR>1 = positive effect
+
+rownames <- cbind(
+  c("Effect parameter", "Binary OR: mRS<=1", "Binary OR: mRS<=2","Binary OR: mRS<=3",
+    "Binary OR: mRS<=4","Binary OR: mRS<=5", "Common Odds Ratio"),
+  c("Effect (OR)", round(ORs[,1], 2)),
+  c("95% CI", "(1.08 - 3.92)", "(1.36 - 3.09)", "(1.32 - 2.71)", "(0.97 - 2.10)", 
+    "(0.69 - 1.63)", "(1.21 - 2.28)"),
+  c("SE", "0.33", "0.21", "0.18", "0.20", "0.22", "0.16")
+    )
+
+FP1 <- forestplot(rownames, 
+           c(NA, log(ORs[,1])),
+           c(NA, log(ORs[,2])), 
+           c(NA, log(ORs[,3])),
+           zero = 0, 
+           lineheight = "auto", 
+           xlab = "log(OR)", 
+           txt_gp = fpTxtGp(ticks=gpar(cex=2.5, fontfamily = "serif"),
+                            label=gpar(cex=2.5, fontfamily = "serif"),
+                            xlab =gpar(cex=2.5, fontfamilty = "serif")),
+           vertices = T, 
+           fn.ci_norm = "fpDrawDiamondCI",
+           boxsize = 0.2, 
+           title = "", # "Forest plot \n MR CLEAN stroke trial (Berkhemer et al., 2015)",
+           graphwidth = unit(100, 'mm'))
+```
+
+```{r, eval=T, echo=T}
+# Stroke trial Logit plot (as proposed by Harrell, 2016)
+sfstroke <- function(y){
+  c('Y ≤ 1' = qlogis(mean(y <= 1)), 
+    'Y ≤ 2' = qlogis(mean(y <= 2)),
+    'Y ≤ 3' = qlogis(mean(y <= 3)),
+    'Y ≤ 4' = qlogis(mean(y <= 4)),
+    'Y ≤ 5' = qlogis(mean(y <= 5))
+  )
+}
+
+scStroke <-  dfStroke$score 
+Treatment <- dfStroke$treat
+
+s <-  summary(scStroke ~ Treatment, fun = sfstroke)
+plot(s, which = 1:5, pch = 1:5, xlab = 'logit', 
+     main = 'Logit per cut-off value per treatment group
+     MR CLEAN stroke trial (Berkhemer et al., 2015) 
+     (PO assumption holds)', cex = 0.75,
+     width.factor = 1.5, xlim = c(-3, 2))
+```
+
+This plot can be used to graphically check the proportional odds assumption. Each symbol represents the logit (log of the odds) for a cut-off value mRS $\leq$ 1, mRS $\leq$ 2, mRS $\leq$ 3, mRS $\leq$ 4 and mRS $\leq$ 5 (from left to right) for each treatment group separately. The proportional odds assumption is likely to hold if the lines connecting a pair of equal symbols between the treatment groups (yes and no) are parallel to each other, or equivalently, if the distances between subsequent symbols are consistent between the treatment groups (Harrell, 2016). In the original trial, the proportional odds assumption was validated.
+
+Other approaches to testing the proportional odds assumption are the brant test and likelihood ratio test, see below:
+
+```{r, eval=T, echo=T}
+# Brant test: test for PO assumption
+brant(fit.polr) # prob > 0.05 so PO assumption holds
+```
+
+```{r, eval=T, echo=T}
+# LRT: test for PO assumption
+fit.multinom <- multinom(score ~ treat, data = dfStroke)
+1 - pchisq(abs(fit.polr$deviance-fit.multinom$deviance),
+           abs(fit.multinom$edf-fit.polr$edf)) # prob > 0.05 so PO assumption holds
+```
+
+```{r}
+# p values (all 0.002 for tx effect)
+
+wilcox.test(score ~ treat, data = dfStroke) # Mann Whitney U test
+fit.lrm # Wald test and LR test
+```
+
+```{r}
+# Unordered chi-squared test
+
+chisq.test(dfStroke$treat, dfStroke$score) 
+```
+
+# TBI trial (Hutchinson et al., 2016)
+
+In this TBI trial, the PO assumption was rejected. An unordered Chi-square test was used to formally compare groups.
+A liberal approach would be to perform ordinal logistic regression as follows. 
+
+```{r, eval=T, echo=T}
+# reconstruct dataset based on table 3, score 7 and 8 collapsed 
+surgical <- c(rep(1, 54), rep(2, 17), rep(3, 44), rep(4, 31), rep(5, 20), rep(6, 27), rep(7, (5+3))) #GOS-E scores
+medical <- c(rep(1, 92), rep(2, 4), rep(3, 27), rep(4, 15), rep(5, 19), rep(6, 18), rep(7, (6+7))) #GOS-E scores
+
+dfTBI <- data.frame(score = c(medical, surgical),# GOS-E scores (0 = death, 8 = upper good recovery)
+                    treat = c(rep(0, length(medical)), rep(1, length(surgical)))) 
+                    # 0 = regular medical care (n = 188)
+                    # 1 = craniectomy surgery (n = 201)
+
+options(datadist=datadist(dfTBI, q.effect = c(0.5, 0.75)))
+
+table(dfTBI$treat, dfTBI$score)
+```
+
+```{r, eval=T, echo=T}
+# 1) fit LRM
+fit.lrm <- lrm(score ~ treat, data = dfTBI)
+# summary(fit.lrm) # cOR
+
+# 2) fit ORM
+fit.orm <- orm(score ~ treat, data = dfTBI)
+# summary(fit.orm) # cOR
+
+# 3) fit POLR 
+fit.polr <- polr(as.factor(score) ~ treat, data = dfTBI, Hess = T)
+# exp(coef(fit.polr)) # cOR
+```
+
+```{r, eval=T, echo=T}
+# Function to perform logistic regression for each cut-off value
+# Same function as before, but for GOS-E higher scores are better
+PerformLogReg <- function(data){ 
+  levels <- unique(data$score) 
+  mat <- matrix(nrow = length(levels)-1, ncol = 4)
+  for (i in 1:(max(data$score)-1)){
+    fit <- glm(data$score>levels[i] ~ treat, data = data, family = "binomial") 
+    # higher scores are better -> OR>1 = pos effect
+    mat[i, 1] <- exp(coef(fit)[2])
+    mat[i, 2:3] <- exp(confint(fit)["treat", ])
+    mat[i, 4] <- summary(fit)$coefficients[2,2]
+  }
+  return(mat)
+}
+```
+
+```{r, eval=T, echo=T, warning=F, message=F}
+# TBI trial Forest plot
+ORs <- rbind(PerformLogReg(data = dfTBI), # binary ORs
+      c(exp(summary(fit.lrm)[1, c(4, 6, 7)]), summary(fit.lrm)[1, 5])) # common OR
+
+rownames <- cbind(
+  c("Effect parameter", "Binary OR: GOSE > 1", "Binary OR: GOSE > 2","Binary OR: GOSE > 3",
+    "Binary OR: GOSE > 4","Binary OR: GOSE > 5", "Binary OR: GOSE > 6", "Common Odds Ratio"),
+  c("Effect (OR)", round(ORs[,1], 2)),
+  c("95% CI", "(1.71 - 4.00)", "(1.27 - 2.88)", "(0.93 - 2.14)", "(0.66 - 1.63)", "(0.63 - 1.82)", 
+    "(0.22 - 1.36)","(1.16 - 2.39)"),
+  c("SE", round(ORs[,4], 2))
+    )
+ask <- par(ask=TRUE)
+
+forestplot(rownames, 
+           c(NA, log(ORs[,1])),
+           c(NA, log(ORs[,2])), 
+           c(NA, log(ORs[,3])),
+           zero = 0, 
+           lineheight = "auto", 
+           txt_gp = fpTxtGp(ticks=gpar(cex=2.5, fontfamily = "serif"),
+                            label=gpar(cex=2.5, fontfamily = "serif"),
+                            xlab =gpar(cex=2.5, fontfamilty = "serif")),
+           xlab = "log(OR)", 
+           vertices = T, 
+           fn.ci_norm = "fpDrawDiamondCI",
+           boxsize = 0.2, 
+           title = "", # "Forest plot \n TBI trial (Hutchinson et al., 2016)",
+           graphwidth = unit(100, 'mm'))
+```
+
+```{r, eval=T, echo=T}
+# TBI trial Logit plot (as proposed by Harrell, 2016)
+
+sc <-  dfTBI$score - 1
+sf <- function(y){
+  c('Y ≥ 1' = qlogis(mean(y >= 1)), 
+    'Y ≥ 2' = qlogis(mean(y >= 2)),
+    'Y ≥ 3' = qlogis(mean(y >= 3)),
+    'Y ≥ 4' = qlogis(mean(y >= 4)),
+    'Y ≥ 5' = qlogis(mean(y >= 5)),
+    'Y ≥ 6' = qlogis(mean(y >= 6)),
+    'Y ≥ 7' = qlogis(mean(y >= 7))
+  )
+}
+
+Treatment <- dfTBI$treat
+
+s <-  summary(sc ~ Treatment, fun = sf)[1:2, ]
+plot(s, which = 1:7, pch = 1:7, xlab = 'logit', 
+     main = 'Logit per cut off value per treatment group
+     TBI trial (Hutchinson et al, 2016)
+     (PO assumption violated)', cex = 0.75,
+     width.factor = 1.5, xlim = c(-4.5, 1.5))
+```
+
+```{r, eval=T, echo=T}
+# Brant test: test for PO assumption
+brant(fit.polr) # prob < 0.001 so PO assumption violated
+```
+
+```{r, eval=T, echo=T}
+# LRT: test for PO assumption
+fit.multinom <- multinom(score ~ treat, data = dfTBI)
+1 - pchisq(abs(fit.polr$deviance-fit.multinom$deviance), 
+           abs(fit.multinom$edf-fit.polr$edf)) # prob < 0.001 so PO assumption violated
+```
+
+```{r}
+# p values (all 0.006 for tx effect)
+
+wilcox.test(score ~ treat, data = dfTBI) # Mann Whitney U test
+fit.lrm # Wald test and LR test 
+```
+
+```{r}
+# Unordered chi-squared test
+
+chisq.test(dfTBI$treat, y =dfTBI$score) 
+```
+
+
+
+
+
